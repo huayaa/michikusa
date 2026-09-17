@@ -810,6 +810,17 @@ function localSet(key, value) {
   try { localStorage.setItem(key, value); return true; } catch (e) { return false; }
 }
 
+// この端末だけの、他人には見えないID。メッセージの「本当の持ち主」の証明に使う
+function getDeviceId() {
+  let id = localGet('deviceId');
+  if (!id) {
+    id = (crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
+    localSet('deviceId', id);
+  }
+  return id;
+}
+const DEVICE_ID = getDeviceId();
+
 // --- ここから: Supabase(みんなで共有するデータ)用のクライアント ---
 const SUPABASE_URL = "https://dguvqeduxkoqwvajivha.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRndXZxZWR1eGtvcXd2YWppdmhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg5MTgyOTgsImV4cCI6MjEwNDQ5NDI5OH0.2Y3s08z-uGgvQb_gQwbHyJpJAnbj3VEbONI33nx3iz0";
@@ -848,7 +859,7 @@ async function loadMessages() {
   try {
     const { data, error } = await sb.from('messages').select('*').order('created_at', { ascending: true }).limit(300);
     if (!error && data) {
-      state.messages = data.map(r => ({ id: r.id, sender: r.sender, text: r.text, time: new Date(r.created_at).getTime(), hidden: !!r.hidden }));
+      state.messages = data.map(r => ({ id: r.id, sender: r.sender, text: r.text, time: new Date(r.created_at).getTime(), hidden: !!r.hidden, ownerId: r.owner_id }));
       renderMessages();
     }
   } catch (e) {}
@@ -862,7 +873,7 @@ function startRealtime() {
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
       const r = payload.new;
       if (!state.messages.find(m => m.id === r.id)) {
-        state.messages.push({ id: r.id, sender: r.sender, text: r.text, time: new Date(r.created_at).getTime(), hidden: !!r.hidden });
+        state.messages.push({ id: r.id, sender: r.sender, text: r.text, time: new Date(r.created_at).getTime(), hidden: !!r.hidden, ownerId: r.owner_id });
         renderMessages();
       }
     })
@@ -1221,7 +1232,7 @@ function renderMessages() {
     return;
   }
   container.innerHTML = visible.map(m => {
-    const mine = m.sender === state.profile.nickname;
+    const mine = m.ownerId === DEVICE_ID;
     const avatar = avatarFor(m.sender, m.avatar);
     const role = roleFor(m.sender, m.role);
     const isSticker = typeof m.text === 'string' && m.text.startsWith(STICKER_PREFIX);
@@ -1324,10 +1335,11 @@ async function sendSticker(idx) {
       id: newId,
       sender: state.profile.nickname,
       text: STICKER_PREFIX + idx,
+      owner_id: DEVICE_ID,
     });
     if (error) throw error;
     if (!state.messages.find(m => m.id === newId)) {
-      state.messages.push({ id: newId, sender: state.profile.nickname, text: STICKER_PREFIX + idx, time: Date.now() });
+      state.messages.push({ id: newId, sender: state.profile.nickname, text: STICKER_PREFIX + idx, time: Date.now(), ownerId: DEVICE_ID });
       renderMessages();
     }
   } catch (e) {
@@ -1377,6 +1389,7 @@ async function sendMessage() {
       id: newId,
       sender: state.profile.nickname,
       text: filtered.text,
+      owner_id: DEVICE_ID,
     });
     if (error) throw error;
     if (filtered.flagged) {
@@ -1384,7 +1397,7 @@ async function sendMessage() {
     }
     // リアルタイム通知が来る前に自分の画面にはすぐ反映しておく
     if (!state.messages.find(m => m.id === newId)) {
-      state.messages.push({ id: newId, sender: state.profile.nickname, text: filtered.text, time: Date.now() });
+      state.messages.push({ id: newId, sender: state.profile.nickname, text: filtered.text, time: Date.now(), ownerId: DEVICE_ID });
       renderMessages();
     }
   } catch (e) {
@@ -1396,9 +1409,9 @@ async function sendMessage() {
 
 async function deleteMessage(id) {
   try {
-    await sb.from('messages').delete().eq('id', id).eq('sender', state.profile.nickname);
+    await sb.from('messages').delete().eq('id', id).eq('owner_id', DEVICE_ID);
   } catch (e) {}
-  state.messages = state.messages.filter(m => !(m.id === id && m.sender === state.profile.nickname));
+  state.messages = state.messages.filter(m => !(m.id === id && m.ownerId === DEVICE_ID));
   renderMessages();
 }
 
