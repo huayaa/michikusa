@@ -797,8 +797,10 @@ const TERMS_FULL_HTML = `
 <h3 class="terms-doc-h2">8. 運営者の責任・免責事項</h3>
 <ul class="terms-doc-ul">
 <li>本サービスは個人が運営しており、専門的な相談・医療行為を提供するものではありません</li>
-<li>利用者間のやり取りについて、運営が内容を完全に把握・管理することはできません</li>
-<li>本サービスの利用により生じたトラブルについて、運営が可能な範囲で対応しますが、一切の責任を負うものではありません</li>
+<li>運営者は、本サービス上で発生するすべての投稿、コメント、利用者間のやり取り、その他のトラブルを常時確認・監視しているわけではありません。そのため、問題の発見や対応が遅れる場合があります</li>
+<li>本サービスの利用に関連して発生したトラブルについて、運営者は可能な範囲で確認・対応を行いますが、法令上責任を負う場合を除き、責任を負わないものとします</li>
+<li>利用者同士のトラブルについて、運営者がすべてを防止・解決できることを保証するものではありません</li>
+<li>本サービスは、システム上の不具合、通信障害、メンテナンスその他の事情により、予告なく利用できなくなる場合があります</li>
 </ul>
 <h3 class="terms-doc-h2">9. 未成年の方のご利用について</h3>
 <p class="terms-doc-p">未成年の方がご利用になる場合、保護者の方に本サービスの利用について伝えていただくことを推奨します。ただし、ご家庭の事情により保護者に伝えることが難しい場合は、伝えなくてもご利用いただけます。</p>
@@ -955,7 +957,7 @@ function startRealtime() {
       if (m) m.hidden = !!r.hidden;
       renderMessages();
     })
-    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, (payload) => {
+    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages', filter: 'room=eq.' + room }, (payload) => {
       const old = payload.old;
       state.messages = state.messages.filter(m => m.id !== old.id);
       renderMessages();
