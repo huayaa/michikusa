@@ -955,7 +955,7 @@ function startRealtime() {
       if (m) m.hidden = !!r.hidden;
       renderMessages();
     })
-    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages', filter: 'room=eq.' + room }, (payload) => {
+    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, (payload) => {
       const old = payload.old;
       state.messages = state.messages.filter(m => m.id !== old.id);
       renderMessages();
