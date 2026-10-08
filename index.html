@@ -444,6 +444,22 @@
     gap: 10px;
     min-height: 380px;
   }
+  /* --- チャット画面：枠の高さを固定し、メッセージは枠の中でスクロール --- */
+  .app:has(#messages) { height: 600px; }
+  .app:has(#messages) #root {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .app:has(#messages) #root > * { flex-shrink: 0; }
+  .app:has(#messages) #root > .messages {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .app:has(#messages) #admin-slot { max-height: 160px; overflow-y: auto; }
   .empty-hint {
     text-align: center;
     color: var(--ink-soft);
@@ -615,6 +631,61 @@
   }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+  /* --- 道クサ：時間帯・ラジオ --- */
+  .service-status {
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--avatar-bg);
+    color: var(--ink-soft);
+    font-size: 11.5px;
+    line-height: 1.5;
+    text-align: center;
+  }
+  .service-status.pause {
+    background: var(--lav-pale);
+  }
+  .service-status.radio {
+    background: var(--teal-pale, #eefaf8);
+  }
+  .radio-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+  .radio-file {
+    font-size: 11px;
+    width: 100%;
+  }
+  .radio-btn {
+    border: none;
+    border-radius: 10px;
+    padding: 7px 11px;
+    background: var(--teal);
+    color: #fff;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11.5px;
+  }
+  .radio-btn.secondary {
+    background: var(--ink-soft);
+  }
+  .radio-btn:disabled {
+    opacity: .5;
+    cursor: default;
+  }
+  .radio-now {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--ink-soft);
+  }
+  .admin-radio-box {
+    background: #fff;
+    border-radius: 10px;
+    padding: 10px;
+    margin-bottom: 12px;
+  }
   .admin-panel {
     padding: 18px;
     border-top: 1px solid var(--line);
@@ -843,6 +914,9 @@ let state = {
   profiles: {},         // 共有:ニックネーム -> 最新アイコン
   showAdmin: false,
   room: DEFAULT_ROOM_ID, // 今いる部屋
+  radio: { url: '', name: '', updatedAt: null },
+  serviceTimer: null,
+  radioAudio: null,
 };
 
 const root = document.getElementById('root');
@@ -1103,6 +1177,9 @@ async function init() {
     await refreshBanned();
     await loadMessages();
     startRealtime();
+    await refreshRadioSetting();
+    startServiceClock();
+    ensureRadioResumeOnInteraction();
   }
 }
 
@@ -1234,8 +1311,225 @@ function renderSetup(isEdit) {
   }
 }
 
+
+// --- 道クサ：時間帯・道クサラジオ ---
+function getJapanMinutes() {
+  const parts = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
+  const h = Number(parts.find(p => p.type === 'hour')?.value || 0);
+  const m = Number(parts.find(p => p.type === 'minute')?.value || 0);
+  return h * 60 + m;
+}
+
+function getServiceMode() {
+  const min = getJapanMinutes();
+  // 12:00-12:30 = 道クサラジオ
+  if (min >= 720 && min < 750) return 'radio';
+  // 21:30-24:00 または 00:00-06:30 = 夜間停止
+  if (min >= 1290 || min < 390) return 'night';
+  return 'normal';
+}
+
+function isChatPaused() {
+  return getServiceMode() !== 'normal';
+}
+
+function serviceModeLabel(mode) {
+  if (mode === 'radio') return '12:00〜12:30は「道クサラジオ」の時間です。チャットとスタンプはお休みです。';
+  if (mode === 'night') return '現在は休止時間（21:30〜翌6:30）です。チャットとスタンプはお休みです。';
+  return 'チャット・スタンプを利用できます。';
+}
+
+function updateServiceStatus() {
+  const el = document.getElementById('service-status');
+  if (!el) return;
+  const mode = getServiceMode();
+  el.className = 'service-status ' + (mode === 'normal' ? '' : mode);
+  el.textContent = serviceModeLabel(mode);
+
+  const input = document.getElementById('msg-input');
+  const send = document.getElementById('send-btn');
+  const sticker = document.getElementById('sticker-btn');
+  const paused = mode !== 'normal';
+  if (input) {
+    input.disabled = paused;
+    input.placeholder = paused ? '現在はチャットをお休みしています' : 'メッセージを入力...';
+  }
+  if (send) send.disabled = paused;
+  if (sticker) sticker.disabled = paused;
+  if (paused) {
+    const panel = document.getElementById('sticker-panel');
+    if (panel) {
+      panel.classList.remove('open');
+      panel.innerHTML = '';
+    }
+  }
+}
+
+function stopRadioAudio() {
+  if (!state.radioAudio) return;
+  try {
+    state.radioAudio.pause();
+    state.radioAudio.currentTime = 0;
+  } catch (e) {}
+  state.radioAudio = null;
+}
+
+async function startRadioAudioIfNeeded() {
+  const mode = getServiceMode();
+  if (mode !== 'radio' || !state.radio.url) {
+    stopRadioAudio();
+    return;
+  }
+
+  if (!state.radioAudio || state.radioAudio.src !== state.radio.url) {
+    stopRadioAudio();
+    const audio = new Audio(state.radio.url);
+    audio.preload = 'auto';
+    audio.loop = true;
+    audio.volume = 1;
+    state.radioAudio = audio;
+  }
+
+  try {
+    await state.radioAudio.play();
+  } catch (e) {
+    // ブラウザの自動再生制限。ユーザー操作時に再試行する。
+  }
+}
+
+function ensureRadioResumeOnInteraction() {
+  const resume = () => {
+    if (getServiceMode() === 'radio') startRadioAudioIfNeeded();
+  };
+  ['click','touchstart','keydown'].forEach(ev => {
+    document.addEventListener(ev, resume, { passive: true });
+  });
+}
+
+async function refreshRadioSetting() {
+  try {
+    const { data, error } = await sb
+      .from('site_settings')
+      .select('value, updated_at')
+      .eq('key', 'today_radio')
+      .maybeSingle();
+    if (!error && data) {
+      let value = {};
+      try { value = JSON.parse(data.value || '{}'); } catch (e) {}
+      state.radio = {
+        url: value.url || '',
+        name: value.name || '',
+        updatedAt: data.updated_at || null
+      };
+    } else {
+      state.radio = { url: '', name: '', updatedAt: null };
+    }
+  } catch (e) {
+    console.warn('ラジオ設定の取得に失敗しました', e);
+  }
+  updateRadioAdminView();
+  updateServiceStatus();
+  await startRadioAudioIfNeeded();
+}
+
+function updateRadioAdminView() {
+  const box = document.getElementById('radio-admin-info');
+  if (!box) return;
+  box.innerHTML = state.radio.url
+    ? `<div>現在の放送：<b>${escapeHtml(state.radio.name || '今日のラジオ')}</b></div>
+       <div class="radio-controls">
+         <button type="button" class="radio-btn secondary" id="radio-clear-btn">今日のラジオを解除</button>
+       </div>`
+    : '<div>今日流すラジオはまだ設定されていません。</div>';
+
+  const clearBtn = document.getElementById('radio-clear-btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', clearTodayRadio);
+  }
+}
+
+async function setTodayRadio(file) {
+  if (state.profile.role !== 'admin') {
+    showToast('今日のラジオを設定できるのは管理人だけです');
+    return;
+  }
+  if (!file) return;
+  if (file.type !== 'audio/mpeg' && !/\.mp3$/i.test(file.name)) {
+    showToast('MP3ファイルを選んでください');
+    return;
+  }
+  if (file.size > 50 * 1024 * 1024) {
+    showToast('MP3は50MB以下にしてください');
+    return;
+  }
+
+  const path = 'today-' + Date.now() + '.mp3';
+  try {
+    showToast('ラジオをアップロードしています…');
+    const { error: uploadError } = await sb.storage
+      .from('dokusa-radio')
+      .upload(path, file, { contentType: 'audio/mpeg', upsert: false });
+    if (uploadError) throw uploadError;
+
+    const { data: publicData } = sb.storage.from('dokusa-radio').getPublicUrl(path);
+    const url = publicData?.publicUrl;
+    if (!url) throw new Error('公開URLを取得できませんでした');
+
+    const value = JSON.stringify({ url, name: file.name });
+    const { error: settingError } = await sb.from('site_settings').upsert({
+      key: 'today_radio',
+      value,
+      updated_at: new Date().toISOString()
+    });
+    if (settingError) throw settingError;
+
+    state.radio = { url, name: file.name, updatedAt: new Date().toISOString() };
+    updateRadioAdminView();
+    updateServiceStatus();
+    showToast('今日のラジオを設定しました');
+    await startRadioAudioIfNeeded();
+  } catch (e) {
+    console.error('ラジオ設定エラー', e);
+    showToast('ラジオ設定失敗: ' + (e?.message || 'アップロードに失敗しました'));
+  }
+}
+
+async function clearTodayRadio() {
+  if (state.profile.role !== 'admin') return;
+  try {
+    const { error } = await sb.from('site_settings').delete().eq('key', 'today_radio');
+    if (error) throw error;
+    state.radio = { url: '', name: '', updatedAt: null };
+    stopRadioAudio();
+    updateRadioAdminView();
+    showToast('今日のラジオを解除しました');
+  } catch (e) {
+    showToast('ラジオ解除に失敗しました: ' + (e?.message || ''));
+  }
+}
+
+function startServiceClock() {
+  if (state.serviceTimer) clearInterval(state.serviceTimer);
+  state.serviceTimer = setInterval(async () => {
+    updateServiceStatus();
+    const mode = getServiceMode();
+    if (mode === 'radio') {
+      await startRadioAudioIfNeeded();
+    } else {
+      stopRadioAudio();
+    }
+  }, 1000);
+  updateServiceStatus();
+}
+
 function renderChat() {
   root.innerHTML = `
+    <div id="service-status" class="service-status"></div>
     <div class="messages" id="messages">
       <div class="empty-hint">まだメッセージはありません。<br>気軽に「こんにちは」から始めてみてください。</div>
     </div>
@@ -1487,6 +1781,10 @@ function closeCtxMenu() {
 }
 
 async function sendSticker(idx) {
+  if (isChatPaused()) {
+    showToast(serviceModeLabel(getServiceMode()));
+    return;
+  }
   const newId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   try {
     const { error } = await sb.from('messages').insert({
@@ -1509,6 +1807,10 @@ async function sendSticker(idx) {
 }
 
 async function sendMessage() {
+  if (isChatPaused()) {
+    showToast(serviceModeLabel(getServiceMode()));
+    return;
+  }
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
   if (!text) return;
@@ -1678,8 +1980,20 @@ async function toggleAdmin() {
       list = data.map(r => ({ reporter: r.reporter, sender: r.sender, text: r.text }));
     }
   } catch (e) {}
+  const radioAdminHtml = state.profile.role === 'admin' ? `
+    <div class="admin-radio-box">
+      <h3>今日流すラジオ</h3>
+      <div>12:00〜12:30に流すMP3を設定できます。</div>
+      <div class="radio-controls">
+        <input class="radio-file" id="today-radio-file" type="file" accept=".mp3,audio/mpeg">
+      </div>
+      <div id="radio-admin-info" class="radio-now"></div>
+    </div>
+  ` : '';
+
   slot.innerHTML = `
     <div class="admin-panel">
+      ${radioAdminHtml}
       <h3>通報一覧</h3>
       ${list.length === 0
         ? '<div class="report-item">通報はまだありません。</div>'
@@ -1692,6 +2006,11 @@ async function toggleAdmin() {
       }
     </div>
   `;
+  updateRadioAdminView();
+  const radioFile = document.getElementById('today-radio-file');
+  if (radioFile) {
+    radioFile.addEventListener('change', (e) => setTodayRadio(e.target.files?.[0]));
+  }
 }
 
 init();
