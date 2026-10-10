@@ -26,23 +26,6 @@
     --avatar-bg: #EFE1CC;
     color-scheme: light;
   }
-  [data-theme="dark"] {
-    --bg: #020826;
-    --panel: #10142E;
-    --ink: #F9F4EF;
-    --ink-soft: #C9BFAE;
-    --teal: #C9A876;
-    --teal-dark: #8C7851;
-    --teal-pale: #2C2415;
-    --lav: #F25042;
-    --lav-pale: #3A1C1A;
-    --line: #23283F;
-    --danger: #F25042;
-    --danger-pale: #3A1C1A;
-    color-scheme: dark;
-  }
-  body { transition: background 0.2s; }
-  .app { transition: background 0.2s, box-shadow 0.2s; }
   * { box-sizing: border-box; }
   body {
     margin: 0;
@@ -92,16 +75,6 @@
     font-size: 12.5px;
     color: rgba(255,255,255,0.85);
     font-family: 'Noto Sans JP', sans-serif;
-  }
-  .theme-toggle {
-    width: 32px; height: 32px;
-    border-radius: 50%;
-    border: 1px solid rgba(255,255,255,0.4);
-    background: rgba(255,255,255,0.12);
-    color: #fff;
-    display: flex; align-items: center; justify-content: center;
-    cursor: pointer;
-    flex-shrink: 0;
   }
   .header-actions { display: flex; gap: 8px; align-items: center; }
   .room-btn {
@@ -212,6 +185,10 @@
   }
   .role-badge.admin { background: var(--teal); color: #fff; }
   .role-badge.subadmin { background: var(--lav); color: #fff; }
+  .role-badge.admin { background: transparent; padding: 0; display: inline-flex; align-items: center; }
+  .role-badge.admin img { width: 25px; height: 25px; object-fit: contain; display: block; }
+  .role-badge.subadmin { background: #F25042; color: #fff; padding: 0; width: 16px; height: 16px; border: 1.5px solid #F25042; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; line-height: 1; box-sizing: border-box; }
+  .role-badge.admin-check { background: #2876D2; color: #fff; padding: 0; width: 18px; height: 18px; border: 1.5px solid #2876D2; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; line-height: 1; box-sizing: border-box; }
 
   /* --- long-press context menu --- */
   .ctx-menu {
@@ -686,6 +663,8 @@
     padding: 10px;
     margin-bottom: 12px;
   }
+  .announcement-banner { margin: 10px 14px 0; padding: 10px 12px; border-radius: 10px; background: #fff3c4; border: 1px solid #e0bd55; color: #423514; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .announcement-banner strong { display:block; font-size:11px; margin-bottom:3px; }
   .admin-panel {
     padding: 18px;
     border-top: 1px solid var(--line);
@@ -720,7 +699,6 @@
       <div class="header-actions">
         <button class="room-btn" id="room-toggle" aria-label="部屋を切り替え">≡部屋</button>
         <button class="profile-btn" id="profile-toggle" aria-label="プロフィール編集">✎</button>
-        <button class="theme-toggle" id="theme-toggle" aria-label="表示モード切り替え">☀</button>
       </div>
     </div>
   </div>
@@ -915,6 +893,7 @@ let state = {
   showAdmin: false,
   room: DEFAULT_ROOM_ID, // 今いる部屋
   radio: { url: '', name: '', updatedAt: null },
+  announcement: { enabled: false, text: '', sender: '' },
   serviceTimer: null,
   radioAudio: null,
 };
@@ -966,21 +945,95 @@ function getDeviceId() {
 }
 const DEVICE_ID = getDeviceId();
 
-// --- ここから: Supabase(みんなで共有するデータ)用のクライアント ---
-const SUPABASE_URL = "https://dguvqeduxkoqwvajivha.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRndXZxZWR1eGtvcXd2YWppdmhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg5MTgyOTgsImV4cCI6MjEwNDQ5NDI5OH0.2Y3s08z-uGgvQb_gQwbHyJpJAnbj3VEbONI33nx3iz0";
-let sb = null;
-try {
-  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
+// --- GAS経由のSupabase通信（学校端末からの直接通信を避ける実験版） ---
+// 通常版HTMLは変更せず、このGAS版だけが google.script.run 経由で通信します。
+function gasCallSupabase(payload) {
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(err => reject(new Error((err && err.message) || String(err))))
+      .dokusaSupabaseRequest(payload);
   });
-} catch (e) {
-  console.error('Supabaseの初期化に失敗しました', e);
 }
+
+class GasSupabaseQuery {
+  constructor(table) {
+    this.table = table;
+    this.action = 'select';
+    this.columns = '*';
+    this.filters = [];
+    this.orderBy = null;
+    this.limitValue = null;
+    this.body = null;
+    this.countMode = null;
+    this.head = false;
+    this.returning = false;
+    this.conflict = null;
+    this._promise = null;
+  }
+  select(columns='*', options={}) {
+    this.columns = columns || '*';
+    this.countMode = options && options.count ? options.count : this.countMode;
+    this.head = !!(options && options.head);
+    if (this.action !== 'select') this.returning = true;
+    return this;
+  }
+  insert(body) { this.action = 'insert'; this.body = body; return this; }
+  update(body) { this.action = 'update'; this.body = body; return this; }
+  delete() { this.action = 'delete'; return this; }
+  upsert(body, options={}) { this.action = 'upsert'; this.body = body; this.conflict = options && options.onConflict ? options.onConflict : null; return this; }
+  eq(column, value) { this.filters.push({column, op:'eq', value:String(value)}); return this; }
+  order(column, options={}) { this.orderBy = {column, ascending: !(options && options.ascending === false)}; return this; }
+  limit(value) { this.limitValue = Number(value); return this; }
+  maybeSingle() { this._maybeSingle = true; return this; }
+  async execute() {
+    if (this._promise) return this._promise;
+    this._promise = gasCallSupabase({
+      kind:'query', table:this.table, action:this.action, columns:this.columns,
+      filters:this.filters, orderBy:this.orderBy, limit:this.limitValue,
+      body:this.body, countMode:this.countMode, head:this.head,
+      returning:this.returning, conflict:this.conflict, maybeSingle:!!this._maybeSingle
+    });
+    return this._promise;
+  }
+  then(resolve, reject) { return this.execute().then(resolve, reject); }
+}
+
+const sb = {
+  from(table) { return new GasSupabaseQuery(table); },
+  rpc(name, params) { return gasCallSupabase({kind:'rpc', name, params:params || {}}).then(r => r); },
+  storage: {
+    from(bucket) {
+      return {
+        upload(path, file, options={}) {
+          return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onerror = () => reject(new Error('音声ファイルを読み込めませんでした'));
+            reader.onload = async () => {
+              try {
+                const dataUrl = String(reader.result || '');
+                const base64 = dataUrl.includes(',') ? dataUrl.slice(dataUrl.indexOf(',') + 1) : '';
+                const result = await gasCallSupabase({
+                  kind:'storage-upload', bucket, path, base64,
+                  fileName:file.name || 'radio.mp3',
+                  contentType:(options && options.contentType) || file.type || 'audio/mpeg',
+                  upsert:!!(options && options.upsert)
+                });
+                resolve(result);
+              } catch (e) { reject(e); }
+            };
+            reader.readAsDataURL(file);
+          });
+        },
+        getPublicUrl(path) {
+          return {data:{publicUrl:'https://dguvqeduxkoqwvajivha.supabase.co/storage/v1/object/public/' + encodeURIComponent(bucket) + '/' + String(path).split('/').map(encodeURIComponent).join('/')}};
+        }
+      };
+    }
+  },
+  channel() { return {on(){return this;}, subscribe(){return this;}}; },
+  removeChannel() { return Promise.resolve(); }
+};
 
 async function refreshProfiles() {
   try {
@@ -1004,8 +1057,12 @@ async function loadMessages() {
   try {
     const { data, error } = await sb.from('messages').select('*').eq('room', state.room).order('created_at', { ascending: true }).limit(300);
     if (!error && data) {
-      state.messages = data.map(r => ({ id: r.id, sender: r.sender, text: r.text, time: new Date(r.created_at).getTime(), hidden: !!r.hidden, ownerId: r.owner_id, room: r.room }));
-      renderMessages();
+      const nextMessages = data.map(r => ({ id: r.id, sender: r.sender, text: r.text, time: new Date(r.created_at).getTime(), hidden: !!r.hidden, ownerId: r.owner_id, room: r.room }));
+      const signature = list => JSON.stringify(list.map(m => [m.id, m.sender, m.text, m.time, m.hidden, m.ownerId, m.room]));
+      if (signature(nextMessages) !== signature(state.messages)) {
+        state.messages = nextMessages;
+        renderMessages();
+      }
     }
   } catch (e) {}
 }
@@ -1028,31 +1085,11 @@ async function syncDeletedMessages() {
 
 function startRealtime() {
   stopRealtimeChannel();
-  const room = state.room;
-  realtimeChannel = sb.channel('messages-channel-' + room)
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: 'room=eq.' + room }, (payload) => {
-      const r = payload.new;
-      if (!state.messages.find(m => m.id === r.id)) {
-        state.messages.push({ id: r.id, sender: r.sender, text: r.text, time: new Date(r.created_at).getTime(), hidden: !!r.hidden, ownerId: r.owner_id, room: r.room });
-        renderMessages();
-      }
-    })
-    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: 'room=eq.' + room }, (payload) => {
-      const r = payload.new;
-      const m = state.messages.find(m => m.id === r.id);
-      if (m) m.hidden = !!r.hidden;
-      renderMessages();
-    })
-    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, (payload) => {
-      const old = payload.old;
-      state.messages = state.messages.filter(m => m.id !== old.id);
-      renderMessages();
-    })
-    .subscribe();
-
-  // RealtimeのDELETEイベントが環境によって届かない場合に備え、IDだけを軽く照合します。
-  deletionSyncTimer = setInterval(syncDeletedMessages, 2000);
-
+  // GAS経由ではWebSocketを使えないため、約1秒ごとに新着を確認します。
+  // 短い間隔にすると反映は速くなりますが、利用人数が多いとGASの負荷が増えます。
+  deletionSyncTimer = setInterval(async () => {
+    await loadMessages();
+  }, 1000);
   if (profilePollTimer) return;
   profilePollTimer = setInterval(async () => {
     await refreshProfiles();
@@ -1124,28 +1161,7 @@ function closeRoomMenu() {
   if (slot) slot.innerHTML = '';
 }
 
-async function initTheme() {
-  const saved = localGet('theme');
-  const theme = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  applyTheme(theme);
-}
-
-function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  const btn = document.getElementById('theme-toggle');
-  if (btn) btn.textContent = theme === 'dark' ? '☾' : '☀';
-}
-
-async function toggleTheme() {
-  const current = document.documentElement.getAttribute('data-theme') || 'light';
-  const next = current === 'dark' ? 'light' : 'dark';
-  applyTheme(next);
-  localSet('theme', next);
-}
-
 async function init() {
-  await initTheme();
-  document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
   document.getElementById('room-toggle').addEventListener('click', openRoomMenu);
   document.getElementById('room-label').addEventListener('click', openRoomMenu);
 
@@ -1178,6 +1194,7 @@ async function init() {
     await loadMessages();
     startRealtime();
     await refreshRadioSetting();
+    await refreshAnnouncement();
     startServiceClock();
     ensureRadioResumeOnInteraction();
   }
@@ -1341,7 +1358,7 @@ function isChatPaused() {
 function serviceModeLabel(mode) {
   if (mode === 'radio') return '12:00〜12:30は「道クサラジオ」の時間です。チャットとスタンプはお休みです。';
   if (mode === 'night') return '現在は休止時間（21:30〜翌6:30）です。チャットとスタンプはお休みです。';
-  return 'チャット・スタンプを利用できます。';
+  return '';
 }
 
 function updateServiceStatus() {
@@ -1350,6 +1367,8 @@ function updateServiceStatus() {
   const mode = getServiceMode();
   el.className = 'service-status ' + (mode === 'normal' ? '' : mode);
   el.textContent = serviceModeLabel(mode);
+  // 通常時は案内を表示せず、休止時間だけお知らせする
+  el.hidden = mode === 'normal';
 
   const input = document.getElementById('msg-input');
   const send = document.getElementById('send-btn');
@@ -1530,6 +1549,7 @@ function startServiceClock() {
 function renderChat() {
   root.innerHTML = `
     <div id="service-status" class="service-status"></div>
+    <div id="announcement-banner" class="announcement-banner" style="display:none"></div>
     <div class="messages" id="messages">
       <div class="empty-hint">まだメッセージはありません。<br>気軽に「こんにちは」から始めてみてください。</div>
     </div>
@@ -1544,7 +1564,7 @@ function renderChat() {
     </div>
     <div class="footer-links">
       <a id="footer-terms-link">利用規約</a> ・ <a id="footer-blocked-link">ブロック一覧</a>
-      ${(state.profile.role === 'admin' || state.profile.role === 'subadmin') ? ' ・ <a id="admin-toggle">運営スタッフ用</a>' : ''}
+      ${(state.profile.role === 'admin' || state.profile.role === 'subadmin') ? ' ・ <a id="admin-toggle">運営スタッフ用</a>' : ' ・ <a id="admin-toggle">運営スタッフログイン</a>'}
     </div>
     <div id="admin-slot"></div>
   `;
@@ -1580,7 +1600,10 @@ function renderChat() {
     charCountEl.classList.toggle('char-count-warn', len >= 280);
   });
   const adminToggleEl = document.getElementById('admin-toggle');
-  if (adminToggleEl) adminToggleEl.addEventListener('click', toggleAdmin);
+  if (adminToggleEl) adminToggleEl.addEventListener('click', () => {
+    if (state.profile.role === 'admin' || state.profile.role === 'subadmin') toggleAdmin();
+    else loginStaff();
+  });
   document.getElementById('profile-toggle').addEventListener('click', () => {
     const slot = document.getElementById('profile-edit-slot');
     if (slot.innerHTML) { slot.innerHTML = ''; return; }
@@ -1647,11 +1670,41 @@ function updateFooterLinks() {
   const el = document.querySelector('.footer-links');
   if (!el) return;
   const canSeeAdmin = state.profile && (state.profile.role === 'admin' || state.profile.role === 'subadmin');
-  el.innerHTML = '<a id="footer-terms-link">利用規約</a> ・ <a id="footer-blocked-link">ブロック一覧</a>' + (canSeeAdmin ? ' ・ <a id="admin-toggle">運営スタッフ用</a>' : '');
+  el.innerHTML = '<a id="footer-terms-link">利用規約</a> ・ <a id="footer-blocked-link">ブロック一覧</a>' + (canSeeAdmin ? ' ・ <a id="admin-toggle">運営スタッフ用</a>' : ' ・ <a id="admin-toggle">運営スタッフログイン</a>');
   document.getElementById('footer-terms-link').addEventListener('click', openTermsModal);
   document.getElementById('footer-blocked-link').addEventListener('click', openBlockedModal);
   const adminToggleEl = document.getElementById('admin-toggle');
-  if (adminToggleEl) adminToggleEl.addEventListener('click', toggleAdmin);
+  if (adminToggleEl) adminToggleEl.addEventListener('click', () => {
+    if (state.profile.role === 'admin' || state.profile.role === 'subadmin') toggleAdmin();
+    else loginStaff();
+  });
+}
+
+async function loginStaff() {
+  const passcode = window.prompt('運営スタッフ用の合言葉を入力してください。');
+  if (passcode === null || !passcode.trim()) return;
+  try {
+    const { data: claimedRole, error } = await sb.rpc('claim_role', {
+      p_nickname: state.profile.nickname,
+      p_avatar: state.profile.avatar,
+      p_passcode: passcode.trim(),
+    });
+    if (error) throw error;
+    if (!claimedRole) {
+      showToast('合言葉が違うようです。もう一度確認してください。');
+      return;
+    }
+    const newProfile = { ...state.profile, role: claimedRole };
+    state.profile = newProfile;
+    localSet('profile', JSON.stringify(newProfile));
+    state.profiles[newProfile.nickname] = { avatar: newProfile.avatar, role: claimedRole };
+    updateFooterLinks();
+    renderMessages();
+    showToast(claimedRole === 'admin' ? '管理人モードになりました' : '副管理人モードになりました');
+  } catch (e) {
+    console.error('運営スタッフ認証エラー', e);
+    showToast('認証に失敗しました。通信状況を確認してください。');
+  }
 }
 
 function avatarFor(name, fallback) {
@@ -1665,8 +1718,8 @@ function roleFor(name, fallback) {
 }
 
 function roleBadgeHtml(role) {
-  if (role === 'admin') return '<span class="role-badge admin">管理人</span>';
-  if (role === 'subadmin') return '<span class="role-badge subadmin">副管理人</span>';
+  if (role === 'admin') return '<span class="role-badge admin-check" title="管理人" aria-label="管理人">✓</span>';
+  if (role === 'subadmin') return '<span class="role-badge subadmin" title="副管理人" aria-label="副管理人">✓</span>';
   return '';
 }
 
@@ -1815,32 +1868,7 @@ async function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
 
-  // 合言葉チェック(判定はSupabase側で行う。コード側には合言葉の手がかりを残さない)
-  try {
-    const { data: claimedRole, error: claimError } = await sb.rpc('claim_role', {
-      p_nickname: state.profile.nickname,
-      p_avatar: state.profile.avatar,
-      p_passcode: text,
-    });
-    if (!claimError && claimedRole) {
-      const newProfile = { ...state.profile, role: claimedRole };
-      state.profile = newProfile;
-      localSet('profile', JSON.stringify(newProfile));
-      state.profiles[newProfile.nickname] = { avatar: newProfile.avatar, role: claimedRole };
-      input.value = '';
-      showToast(claimedRole === 'admin' ? '管理人モードになりました' : '副管理人モードになりました');
-      updateFooterLinks();
-      renderMessages();
-      return;
-    }
-    if (claimError) {
-      console.error('合言葉判定エラー', claimError);
-      showToast('合言葉の判定でエラー: ' + (claimError.message || JSON.stringify(claimError)));
-    }
-  } catch (e) {
-    console.error('合言葉判定エラー(例外)', e);
-    showToast('合言葉の判定でエラー: ' + (e && e.message ? e.message : e));
-  }
+  // 通常のチャット送信では管理人認証を呼ばず、送信処理を優先する
 
   const filtered = filterText(text);
   const newId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -1857,6 +1885,7 @@ async function sendMessage() {
     if (filtered.flagged) {
       showToast('不適切な可能性がある言葉を一部伏せて送信しました');
     }
+    if (state.profile.role === 'admin' && state.announcement.enabled) await updateAnnouncementText(filtered.text);
     // リアルタイム通知が来る前に自分の画面にはすぐ反映しておく
     if (!state.messages.find(m => m.id === newId)) {
       state.messages.push({ id: newId, sender: state.profile.nickname, text: filtered.text, time: Date.now(), ownerId: DEVICE_ID, room: state.room });
@@ -1966,6 +1995,46 @@ async function reportMessage(id) {
   showToast('運営スタッフに通報しました');
 }
 
+async function refreshAnnouncement() {
+  try {
+    const { data, error } = await sb.from('site_settings').select('value').eq('key', 'admin_announcement').maybeSingle();
+    if (!error && data) {
+      const v = JSON.parse(data.value || '{}');
+      state.announcement = { enabled: !!v.enabled, text: v.text || '', sender: v.sender || '管理人' };
+    } else state.announcement = { enabled:false, text:'', sender:'' };
+  } catch(e) {}
+  renderAnnouncement();
+}
+function renderAnnouncement() {
+  const el = document.getElementById('announcement-banner');
+  if (!el) return;
+  if (state.announcement.enabled && state.announcement.text) {
+    el.style.display = 'block';
+    el.innerHTML = `<strong>📢 管理人からのお知らせ</strong>${escapeHtml(state.announcement.text)}`;
+  } else { el.style.display = 'none'; el.textContent = ''; }
+}
+async function toggleAnnouncementMode() {
+  if (state.profile?.role !== 'admin') return;
+  const enabled = !state.announcement.enabled;
+  const value = JSON.stringify({enabled, text: state.announcement.text || '', sender: state.profile.nickname});
+  try {
+    const { error } = await sb.from('site_settings').upsert({key:'admin_announcement', value, updated_at:new Date().toISOString()});
+    if (error) throw error;
+    state.announcement = {...state.announcement, enabled, sender:state.profile.nickname};
+    renderAnnouncement();
+    if (state.showAdmin) toggleAdmin();
+    showToast(enabled ? 'アナウンスモードをONにしました' : 'アナウンスモードをOFFにしました');
+  } catch(e) { showToast('設定に失敗しました。site_settingsの更新権限を確認してください'); }
+}
+async function updateAnnouncementText(text) {
+  if (state.profile?.role !== 'admin' || !state.announcement.enabled) return;
+  const value = JSON.stringify({enabled:true, text, sender:state.profile.nickname});
+  try {
+    const { error } = await sb.from('site_settings').upsert({key:'admin_announcement', value, updated_at:new Date().toISOString()});
+    if (!error) { state.announcement = {enabled:true, text, sender:state.profile.nickname}; renderAnnouncement(); }
+  } catch(e) {}
+}
+
 async function toggleAdmin() {
   state.showAdmin = !state.showAdmin;
   const slot = document.getElementById('admin-slot');
@@ -1980,6 +2049,14 @@ async function toggleAdmin() {
       list = data.map(r => ({ reporter: r.reporter, sender: r.sender, text: r.text }));
     }
   } catch (e) {}
+  const announcementAdminHtml = state.profile.role === 'admin' ? `
+    <div class="admin-radio-box">
+      <h3>アナウンスモード</h3>
+      <div>ONにすると、管理人の最新チャットを画面上部にお知らせとして表示します。</div>
+      <div class="radio-controls"><button type="button" class="radio-btn secondary" id="announcement-toggle">${state.announcement.enabled ? 'アナウンスモードをOFF' : 'アナウンスモードをON'}</button></div>
+      <div class="radio-now">${state.announcement.enabled ? '現在ON' : '現在OFF'}</div>
+    </div>
+  ` : '';
   const radioAdminHtml = state.profile.role === 'admin' ? `
     <div class="admin-radio-box">
       <h3>今日流すラジオ</h3>
@@ -1993,6 +2070,7 @@ async function toggleAdmin() {
 
   slot.innerHTML = `
     <div class="admin-panel">
+      ${announcementAdminHtml}
       ${radioAdminHtml}
       <h3>通報一覧</h3>
       ${list.length === 0
@@ -2007,6 +2085,9 @@ async function toggleAdmin() {
     </div>
   `;
   updateRadioAdminView();
+  const announcementToggle = document.getElementById('announcement-toggle');
+  if (announcementToggle) announcementToggle.addEventListener('click', toggleAnnouncementMode);
+
   const radioFile = document.getElementById('today-radio-file');
   if (radioFile) {
     radioFile.addEventListener('change', (e) => setTodayRadio(e.target.files?.[0]));
