@@ -945,95 +945,21 @@ function getDeviceId() {
 }
 const DEVICE_ID = getDeviceId();
 
-// --- GAS経由のSupabase通信（学校端末からの直接通信を避ける実験版） ---
-// 通常版HTMLは変更せず、このGAS版だけが google.script.run 経由で通信します。
-function gasCallSupabase(payload) {
-  return new Promise((resolve, reject) => {
-    google.script.run
-      .withSuccessHandler(resolve)
-      .withFailureHandler(err => reject(new Error((err && err.message) || String(err))))
-      .dokusaSupabaseRequest(payload);
+// --- GitHub Pages用: Supabaseへ直接接続 ---
+const SUPABASE_URL = "https://dguvqeduxkoqwvajivha.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRndXZxZWR1eGtvcXd2YWppdmhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg5MTgyOTgsImV4cCI6MjEwNDQ5NDI5OH0.2Y3s08z-uGgvQb_gQwbHyJpJAnbj3VEbONI33nx3iz0";
+let sb = null;
+try {
+  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
   });
+} catch (e) {
+  console.error('Supabaseの初期化に失敗しました', e);
 }
-
-class GasSupabaseQuery {
-  constructor(table) {
-    this.table = table;
-    this.action = 'select';
-    this.columns = '*';
-    this.filters = [];
-    this.orderBy = null;
-    this.limitValue = null;
-    this.body = null;
-    this.countMode = null;
-    this.head = false;
-    this.returning = false;
-    this.conflict = null;
-    this._promise = null;
-  }
-  select(columns='*', options={}) {
-    this.columns = columns || '*';
-    this.countMode = options && options.count ? options.count : this.countMode;
-    this.head = !!(options && options.head);
-    if (this.action !== 'select') this.returning = true;
-    return this;
-  }
-  insert(body) { this.action = 'insert'; this.body = body; return this; }
-  update(body) { this.action = 'update'; this.body = body; return this; }
-  delete() { this.action = 'delete'; return this; }
-  upsert(body, options={}) { this.action = 'upsert'; this.body = body; this.conflict = options && options.onConflict ? options.onConflict : null; return this; }
-  eq(column, value) { this.filters.push({column, op:'eq', value:String(value)}); return this; }
-  order(column, options={}) { this.orderBy = {column, ascending: !(options && options.ascending === false)}; return this; }
-  limit(value) { this.limitValue = Number(value); return this; }
-  maybeSingle() { this._maybeSingle = true; return this; }
-  async execute() {
-    if (this._promise) return this._promise;
-    this._promise = gasCallSupabase({
-      kind:'query', table:this.table, action:this.action, columns:this.columns,
-      filters:this.filters, orderBy:this.orderBy, limit:this.limitValue,
-      body:this.body, countMode:this.countMode, head:this.head,
-      returning:this.returning, conflict:this.conflict, maybeSingle:!!this._maybeSingle
-    });
-    return this._promise;
-  }
-  then(resolve, reject) { return this.execute().then(resolve, reject); }
-}
-
-const sb = {
-  from(table) { return new GasSupabaseQuery(table); },
-  rpc(name, params) { return gasCallSupabase({kind:'rpc', name, params:params || {}}).then(r => r); },
-  storage: {
-    from(bucket) {
-      return {
-        upload(path, file, options={}) {
-          return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onerror = () => reject(new Error('音声ファイルを読み込めませんでした'));
-            reader.onload = async () => {
-              try {
-                const dataUrl = String(reader.result || '');
-                const base64 = dataUrl.includes(',') ? dataUrl.slice(dataUrl.indexOf(',') + 1) : '';
-                const result = await gasCallSupabase({
-                  kind:'storage-upload', bucket, path, base64,
-                  fileName:file.name || 'radio.mp3',
-                  contentType:(options && options.contentType) || file.type || 'audio/mpeg',
-                  upsert:!!(options && options.upsert)
-                });
-                resolve(result);
-              } catch (e) { reject(e); }
-            };
-            reader.readAsDataURL(file);
-          });
-        },
-        getPublicUrl(path) {
-          return {data:{publicUrl:'https://dguvqeduxkoqwvajivha.supabase.co/storage/v1/object/public/' + encodeURIComponent(bucket) + '/' + String(path).split('/').map(encodeURIComponent).join('/')}};
-        }
-      };
-    }
-  },
-  channel() { return {on(){return this;}, subscribe(){return this;}}; },
-  removeChannel() { return Promise.resolve(); }
-};
 
 async function refreshProfiles() {
   try {
