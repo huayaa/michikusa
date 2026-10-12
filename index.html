@@ -1483,12 +1483,14 @@ function updateRadioAdminView() {
   }
 }
 
+
 async function setTodayRadio(file) {
-  if (state.profile.role !== 'admin') {
+  if (state.profile?.role !== 'admin') {
     showToast('今日のラジオを設定できるのは管理人だけです');
     return;
   }
   if (!file) return;
+
   if (file.type !== 'audio/mpeg' && !/\.mp3$/i.test(file.name)) {
     showToast('MP3ファイルを選んでください');
     return;
@@ -1498,50 +1500,87 @@ async function setTodayRadio(file) {
     return;
   }
 
-  const path = 'today-' + Date.now() + '.mp3';
+  if (!adminAccessToken) {
+    await adminLogin();
+    if (!adminAccessToken) return;
+  }
+
   try {
-    showToast('ラジオをアップロードしています…');
+    showToast('アップロードの準備中…');
+
+    const uploadInfo = await callAdminSettings('create_radio_upload', {
+      name: file.name,
+    });
+    if (!uploadInfo?.path || !uploadInfo?.token) return;
+
     const { error: uploadError } = await sb.storage
       .from('dokusa-radio')
-      .upload(path, file, { contentType: 'audio/mpeg', upsert: false });
+      .uploadToSignedUrl(
+        uploadInfo.path,
+        uploadInfo.token,
+        file,
+        { contentType: 'audio/mpeg', upsert: false }
+      );
+
     if (uploadError) throw uploadError;
 
-    const { data: publicData } = sb.storage.from('dokusa-radio').getPublicUrl(path);
+    const { data: publicData } = sb.storage
+      .from('dokusa-radio')
+      .getPublicUrl(uploadInfo.path);
+
     const url = publicData?.publicUrl;
     if (!url) throw new Error('公開URLを取得できませんでした');
 
-    const value = JSON.stringify({ url, name: file.name });
-    const { error: settingError } = await sb.from('site_settings').upsert({
-      key: 'today_radio',
-      value,
-      updated_at: new Date().toISOString()
+    const saved = await callAdminSettings('set_radio', {
+      url,
+      name: file.name,
     });
-    if (settingError) throw settingError;
+    if (!saved?.success) return;
 
-    state.radio = { url, name: file.name, updatedAt: new Date().toISOString() };
+    state.radio = {
+      url,
+      name: file.name,
+      updatedAt: new Date().toISOString(),
+    };
+
     updateRadioAdminView();
     updateServiceStatus();
     showToast('今日のラジオを設定しました');
     await startRadioAudioIfNeeded();
   } catch (e) {
     console.error('ラジオ設定エラー', e);
-    showToast('ラジオ設定失敗: ' + (e?.message || 'アップロードに失敗しました'));
+    showToast('ラジオ設定に失敗しました。Storage設定を確認してください');
   }
 }
 
+
+
 async function clearTodayRadio() {
-  if (state.profile.role !== 'admin') return;
+  if (state.profile?.role !== 'admin') {
+    showToast('ラジオを解除できるのは管理人だけです');
+    return;
+  }
+
+  if (!adminAccessToken) {
+    await adminLogin();
+    if (!adminAccessToken) return;
+  }
+
   try {
-    const { error } = await sb.from('site_settings').delete().eq('key', 'today_radio');
-    if (error) throw error;
+    const result = await callAdminSettings('clear_radio');
+    if (!result?.success) return;
+
     state.radio = { url: '', name: '', updatedAt: null };
     stopRadioAudio();
     updateRadioAdminView();
+    updateServiceStatus();
     showToast('今日のラジオを解除しました');
   } catch (e) {
-    showToast('ラジオ解除に失敗しました: ' + (e?.message || ''));
+    console.error('ラジオ解除エラー', e);
+    showToast('ラジオ解除に失敗しました');
   }
 }
+
 
 function startServiceClock() {
   if (state.serviceTimer) clearInterval(state.serviceTimer);
@@ -1996,7 +2035,7 @@ async function reportMessage(id) {
       .from('reports')
       .select('*', { count: 'exact', head: true })
       .eq('message_id', id);
-
+    
     if (!countError && count !== null && count >= REPORT_HIDE_THRESHOLD) {
       await sb.from('messages').update({ hidden: true }).eq('id', id);
       msg.hidden = true;
@@ -2024,27 +2063,42 @@ function renderAnnouncement() {
     el.innerHTML = `<strong>📢 管理人からのお知らせ</strong>${escapeHtml(state.announcement.text)}`;
   } else { el.style.display = 'none'; el.textContent = ''; }
 }
+
 async function toggleAnnouncementMode() {
-  if (state.profile?.role !== 'admin') return;
+  if (state.profile?.role !== 'admin') {
+    showToast('管理人のみ操作できます');
+    return;
+  }
+
+  if (!adminAccessToken) {
+    await adminLogin();
+    if (!adminAccessToken) return;
+  }
+
   const enabled = !state.announcement.enabled;
-  const value = JSON.stringify({enabled, text: state.announcement.text || '', sender: state.profile.nickname});
-  try {
-    const { error } = await sb.from('site_settings').upsert({key:'admin_announcement', value, updated_at:new Date().toISOString()});
-    if (error) throw error;
-    state.announcement = {...state.announcement, enabled, sender:state.profile.nickname};
-    renderAnnouncement();
-    if (state.showAdmin) toggleAdmin();
-    showToast(enabled ? 'アナウンスモードをONにしました' : 'アナウンスモードをOFFにしました');
-  } catch(e) { showToast('設定に失敗しました。site_settingsの更新権限を確認してください'); }
+  const text = state.announcement.text || '';
+  const sender = state.profile.nickname || '管理人';
+
+  const result = await callAdminSettings('set_announcement', {
+    enabled,
+    text,
+    sender,
+  });
+
+  if (!result?.success) return;
+
+  state.announcement = { ...state.announcement, enabled, sender };
+  renderAnnouncement();
+
+  if (state.showAdmin) toggleAdmin();
+
+  showToast(
+    enabled
+      ? 'アナウンスモードをONにしました'
+      : 'アナウンスモードをOFFにしました'
+  );
 }
-async function updateAnnouncementText(text) {
-  if (state.profile?.role !== 'admin' || !state.announcement.enabled) return;
-  const value = JSON.stringify({enabled:true, text, sender:state.profile.nickname});
-  try {
-    const { error } = await sb.from('site_settings').upsert({key:'admin_announcement', value, updated_at:new Date().toISOString()});
-    if (!error) { state.announcement = {enabled:true, text, sender:state.profile.nickname}; renderAnnouncement(); }
-  } catch(e) {}
-}
+
 
 async function toggleAdmin() {
   state.showAdmin = !state.showAdmin;
