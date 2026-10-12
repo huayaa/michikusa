@@ -9,90 +9,6 @@
 <link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@400;500;700&family=Noto+Sans+JP:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   
-let adminSb = null;
-let adminAccessToken = null;
-
-try {
-  adminSb = window.supabase.createClient(
-    SUPABASE_URL,
-    SUPABASE_ANON_KEY,
-    {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-        detectSessionInUrl: false,
-      },
-    }
-  );
-} catch (e) {
-  console.error('管理人認証の初期化に失敗しました', e);
-}
-
-async function adminLogin() {
-  if (!adminSb) {
-    showToast('管理人認証を初期化できませんでした');
-    return;
-  }
-
-  const email = window.prompt('管理人用メールアドレスを入力してください');
-  if (!email) return;
-
-  const password = window.prompt('管理人用パスワードを入力してください');
-  if (!password) return;
-
-  try {
-    const { data, error } = await adminSb.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
-
-    if (error || !data.session?.access_token) {
-      showToast('ログインに失敗しました。入力内容を確認してください');
-      return;
-    }
-
-    adminAccessToken = data.session.access_token;
-    showToast('管理人の追加認証に成功しました');
-  } catch (e) {
-    console.error('管理人ログインエラー', e);
-    showToast('管理人ログインに失敗しました');
-  }
-}
-
-async function callAdminSettings(action, payload = {}) {
-  if (!adminAccessToken) {
-    showToast('先に管理人の追加ログインをしてください');
-    return null;
-  }
-
-  try {
-    const response = await fetch(
-      `${SUPABASE_URL}/functions/v1/admin-settings`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${adminAccessToken}`,
-          'apikey': SUPABASE_ANON_KEY,
-        },
-        body: JSON.stringify({ action, ...payload }),
-      }
-    );
-
-    const result = await response.json();
-
-    if (!response.ok || !result.success) {
-      throw new Error(result.error || '設定変更に失敗しました');
-    }
-
-    return result;
-  } catch (e) {
-    console.error('管理人設定エラー', e);
-    showToast(e?.message || '管理人設定に失敗しました');
-    return null;
-  }
-}
-
 <style>
   :root {
     --bg: #F9F4EF;
@@ -1170,6 +1086,89 @@ function openRoomMenu() {
 function closeRoomMenu() {
   const slot = document.getElementById('room-menu-slot');
   if (slot) slot.innerHTML = '';
+}
+let adminSb = null;
+let adminAccessToken = null;
+
+try {
+  adminSb = window.supabase.createClient(
+    SUPABASE_URL,
+    SUPABASE_ANON_KEY,
+    {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    }
+  );
+} catch (e) {
+  console.error('管理人認証の初期化に失敗しました', e);
+}
+
+async function adminLogin() {
+  if (!adminSb) {
+    showToast('管理人認証を初期化できませんでした');
+    return;
+  }
+
+  const email = window.prompt('管理人用メールアドレスを入力してください');
+  if (!email) return;
+
+  const password = window.prompt('管理人用パスワードを入力してください');
+  if (!password) return;
+
+  try {
+    const { data, error } = await adminSb.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
+
+    if (error || !data.session?.access_token) {
+      showToast('ログインに失敗しました。入力内容を確認してください');
+      return;
+    }
+
+    adminAccessToken = data.session.access_token;
+    showToast('管理人の追加認証に成功しました');
+  } catch (e) {
+    console.error('管理人ログインエラー', e);
+    showToast('管理人ログインに失敗しました');
+  }
+}
+
+async function callAdminSettings(action, payload = {}) {
+  if (!adminAccessToken) {
+    showToast('先に管理人の追加ログインをしてください');
+    return null;
+  }
+
+  try {
+    const response = await fetch(
+      `${SUPABASE_URL}/functions/v1/admin-settings`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${adminAccessToken}`,
+          'apikey': SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ action, ...payload }),
+      }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || '設定変更に失敗しました');
+    }
+
+    return result;
+  } catch (e) {
+    console.error('管理人設定エラー', e);
+    showToast(e?.message || '管理人設定に失敗しました');
+    return null;
+  }
 }
 
 async function init() {
